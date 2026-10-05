@@ -3,6 +3,20 @@ import requests
 import json
 import time
 import base64
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# سيرفر وهمي لإرضاء Render في الخطة المجانية
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"NexaAgent is online!")
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    server.serve_forever()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -60,6 +74,9 @@ def generate_new_html(current_html, prompt):
 
 def main():
     print("[INFO] NexaAgent service starting...")
+    # تشغيل خادم HTTP في خيط منفصل
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+    
     offset = None
     while True:
         try:
