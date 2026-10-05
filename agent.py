@@ -6,7 +6,6 @@ import base64
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# سيرفر وهمي لإرضاء Render في الخطة المجانية
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -60,21 +59,27 @@ def update_github_file(new_content, sha, commit_message):
     return res.status_code == 200
 
 def generate_new_html(current_html, prompt):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     full_prompt = f"You are a web developer. Modify the following HTML code according to this instruction: '{prompt}'. Return ONLY the updated full HTML code without any markdown formatting or explanation.\n\nCurrent HTML:\n{current_html}"
     payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
     headers = {'Content-Type': 'application/json'}
-    res = requests.post(url, headers=headers, json=payload).json()
-    try:
-        text = res['candidates'][0]['content']['parts'][0]['text']
-        return text.replace("```html", "").replace("```", "").strip()
-    except Exception as e:
-        print("Gemini Error:", e)
-        return None
+
+    for model_name in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            res = response.json()
+            if 'candidates' in res and res['candidates']:
+                text = res['candidates'][0]['content']['parts'][0]['text']
+                return text.replace("```html", "").replace("```", "").strip()
+            else:
+                print(f"[Gemini Error] Model {model_name} failed:", res)
+        except Exception as e:
+            print(f"[Gemini Exception] {model_name}:", e)
+    return None
 
 def main():
     print("[INFO] NexaAgent service starting...")
-    # تشغيل خادم HTTP في خيط منفصل
     threading.Thread(target=run_dummy_server, daemon=True).start()
     
     offset = None
