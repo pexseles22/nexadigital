@@ -59,11 +59,12 @@ def update_github_file(new_content, sha, commit_message):
     return res.status_code == 200
 
 def generate_new_html(current_html, prompt):
-    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    models = ["gemini-1.5-flash", "gemini-2.0-flash"]
     full_prompt = f"You are a web developer. Modify the following HTML code according to this instruction: '{prompt}'. Return ONLY the updated full HTML code without any markdown formatting or explanation.\n\nCurrent HTML:\n{current_html}"
     payload = {"contents": [{"parts": [{"text": full_prompt}]}]}
     headers = {'Content-Type': 'application/json'}
 
+    errors = []
     for model_name in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         try:
@@ -71,12 +72,13 @@ def generate_new_html(current_html, prompt):
             res = response.json()
             if 'candidates' in res and res['candidates']:
                 text = res['candidates'][0]['content']['parts'][0]['text']
-                return text.replace("```html", "").replace("```", "").strip()
+                return text.replace("```html", "").replace("```", "").strip(), None
             else:
-                print(f"[Gemini Error] Model {model_name} failed:", res)
+                err_msg = res.get("error", {}).get("message", json.dumps(res))
+                errors.append(f"{model_name}: {err_msg}")
         except Exception as e:
-            print(f"[Gemini Exception] {model_name}:", e)
-    return None
+            errors.append(f"{model_name}: {str(e)}")
+    return None, " | ".join(errors)
 
 def main():
     print("[INFO] NexaAgent service starting...")
@@ -95,7 +97,7 @@ def main():
                 if text and chat_id:
                     send_telegram_message(chat_id, "⏳ جاري معالجة طلبك وتحديث الموقع...")
                     current_html, sha = get_github_file()
-                    updated_html = generate_new_html(current_html, text)
+                    updated_html, err = generate_new_html(current_html, text)
                     if updated_html:
                         success = update_github_file(updated_html, sha, f"Auto update: {text[:30]}")
                         if success:
@@ -103,7 +105,7 @@ def main():
                         else:
                             send_telegram_message(chat_id, "❌ حدث خطأ أثناء التحديث على GitHub.")
                     else:
-                        send_telegram_message(chat_id, "❌ لم يتمكن AI من إنتاج الكود.")
+                        send_telegram_message(chat_id, f"❌ فشل الذكاء الاصطناعي.\nالتفاصيل: {err}")
         except Exception as e:
             print("Error:", e)
         time.sleep(3)
