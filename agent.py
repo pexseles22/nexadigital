@@ -39,8 +39,7 @@ HEADERS_GITHUB = {
 
 async def query_gemini_ai_async(system_prompt: str, user_content: str) -> str:
     """Send clean REST request directly to Google Gemini API (100% Free & Stable)."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    
+url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"    
     payload = {
         "system_instruction": {
             "parts": [{"text": system_prompt}]
