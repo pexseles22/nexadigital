@@ -8,7 +8,6 @@ import base64
 import httpx
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
-from openai import OpenAI
 
 # Dummy server to bypass Render port check
 def start_dummy_server():
@@ -25,25 +24,51 @@ threading.Thread(target=start_dummy_server, daemon=True).start()
 # ==========================================
 # 1. CONFIGURATION & ENVIRONMENT SETUP
 # ==========================================
-client = OpenAI(
-    base_url="https://router.huggingface.co/v1",
-    api_key=os.environ.get("EXPLABS_API_KEY")
-)
-
-# Model ID available on HF Inference Router
-MODEL_NAME = "Qwen/Qwen2.5-Coder-7B-Instruct"
-
+EXPLABS_API_KEY = os.environ.get("EXPLABS_API_KEY")
 WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://your-site.vercel.app")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")  # Format: "user/repo"
 TARGET_FILE = os.environ.get("TARGET_FILE", "index.html")
 
-HEADERS = {
+HEADERS_GITHUB = {
     "Authorization": f"Bearer {GITHUB_TOKEN}",
     "Accept": "application/vnd.github.v3+json",
     "User-Agent": "Autonomous-Patching-Agent"
 }
+
+# Approved list of models on Hugging Face Router
+MODELS_TO_TRY = [
+    "Qwen/Qwen2.5-Coder-32B-Instruct",
+    "Qwen/Qwen2.5-72B-Instruct",
+    "meta-llama/Llama-3.3-70B-Instruct"
+]
+
+async def query_hf_ai_async(messages: list) -> str:
+    """Send clean HTTP request directly to Hugging Face Inference Router."""
+    url = "https://router.huggingface.co/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {EXPLABS_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    async with httpx.AsyncClient(timeout=60.0) as httpx_client:
+        for model in MODELS_TO_TRY:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": 2048
+            }
+            try:
+                response = await httpx_client.post(url, headers=headers, json=payload)
+                if response.status_code == 200:
+                    data = response.json()
+                    return data["choices"][0]["message"]["content"]
+                else:
+                    print(f"⚠️ Model {model} returned status {response.status_code}: {response.text}")
+            except Exception as e:
+                print(f"❌ Exception connecting to {model}: {e}")
+    
+    raise Exception("Failed to get response from all available AI models.")
 
 # ==========================================
 # 2. UTILITY & CLEANING FUNCTIONS
@@ -62,7 +87,7 @@ async def get_github_file_async():
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{TARGET_FILE}"
     async with httpx.AsyncClient() as httpx_client:
         try:
-            response = await httpx_client.get(url, headers=HEADERS, timeout=15.0)
+            response = await httpx_client.get(url, headers=HEADERS_GITHUB, timeout=15.0)
             if response.status_code == 200:
                 data = response.json()
                 content = base64.b64decode(data['content']).decode('utf-8')
@@ -82,7 +107,7 @@ async def update_github_file_async(new_content, sha, commit_message):
     }
     async with httpx.AsyncClient() as httpx_client:
         try:
-            response = await httpx_client.put(url, headers=HEADERS, json=payload, timeout=15.0)
+            response = await httpx_client.put(url, headers=HEADERS_GITHUB, json=payload, timeout=15.0)
             return response.status_code in [200, 201]
         except Exception as e:
             print(f"Error pushing to GitHub: {e}")
@@ -110,22 +135,12 @@ async def auto_healing_watchdog(app):
                 
                 current_code, sha = await get_github_file_async()
                 if current_code and sha:
-                    prompt = f"The website returned error: {status_code}. Fix any broken HTML/JS code in:\n{current_code}"
+                    messages = [
+                        {"role": "system", "content": "You are a code repairing agent. Output ONLY the raw updated code. Absolutely no text explanations, markdown tags, or backticks."},
+                        {"role": "user", "content": f"The website returned error: {status_code}. Fix any broken HTML/JS code in:\n{current_code}"}
+                    ]
                     
-                    loop = asyncio.get_running_loop()
-                    completion = await loop.run_in_executor(
-                        None,
-                        lambda: client.chat.completions.create(
-                            model=MODEL_NAME,
-                            messages=[
-                                {"role": "system", "content": "You are a code repairing agent. Output ONLY the raw updated code. Absolutely no text explanations, markdown tags, or backticks."},
-                                {"role": "user", "content": prompt}
-                            ],
-                            max_tokens=2048
-                        )
-                    )
-                    
-                    raw_patched = completion.choices[0].message.content
+                    raw_patched = await query_hf_ai_async(messages)
                     patched_code = extract_clean_code(raw_patched)
                     
                     success = await update_github_file_async(
@@ -159,20 +174,12 @@ async def handle_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     await context.bot.send_message(chat_id=chat_id, text="🧠 **Step 2:** Generating updates with AI Agent...")
     try:
-        loop = asyncio.get_running_loop()
-        completion = await loop.run_in_executor(
-            None,
-            lambda: client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": "You are an AI developer. Update the code according to request. Output raw updated code only. No explanations, no markdown blocks."},
-                    {"role": "user", "content": f"Existing Code:\n{current_code}\n\nUser Request:\n{user_prompt}"}
-                ],
-                max_tokens=2048
-            )
-        )
+        messages = [
+            {"role": "system", "content": "You are an AI developer. Update the code according to request. Output raw updated code only. No explanations, no markdown blocks."},
+            {"role": "user", "content": f"Existing Code:\n{current_code}\n\nUser Request:\n{user_prompt}"}
+        ]
         
-        raw_code = completion.choices[0].message.content
+        raw_code = await query_hf_ai_async(messages)
         new_code = extract_clean_code(raw_code)
         
         await context.bot.send_message(chat_id=chat_id, text="⚙️ **Step 3:** Committing and pushing changes directly to GitHub...")
@@ -198,6 +205,4 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_command))
     
     print("Autonomous Patching Agent is running.")
-    app.run_polling()
-
     app.run_polling()
