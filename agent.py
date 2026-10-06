@@ -24,7 +24,7 @@ threading.Thread(target=start_dummy_server, daemon=True).start()
 # ==========================================
 # 1. CONFIGURATION & ENVIRONMENT SETUP
 # ==========================================
-EXPLABS_API_KEY = os.environ.get("EXPLABS_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://your-site.vercel.app")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -37,38 +37,28 @@ HEADERS_GITHUB = {
     "User-Agent": "Autonomous-Patching-Agent"
 }
 
-# Approved list of models on Hugging Face Router
-MODELS_TO_TRY = [
-    "Qwen/Qwen2.5-Coder-32B-Instruct",
-    "Qwen/Qwen2.5-72B-Instruct",
-    "meta-llama/Llama-3.3-70B-Instruct"
-]
-
-async def query_hf_ai_async(messages: list) -> str:
-    """Send clean HTTP request directly to Hugging Face Inference Router."""
-    url = "https://router.huggingface.co/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {EXPLABS_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    async with httpx.AsyncClient(timeout=60.0) as httpx_client:
-        for model in MODELS_TO_TRY:
-            payload = {
-                "model": model,
-                "messages": messages,
-                "max_tokens": 2048
-            }
-            try:
-                response = await httpx_client.post(url, headers=headers, json=payload)
-                if response.status_code == 200:
-                    data = response.json()
-                    return data["choices"][0]["message"]["content"]
-                else:
-                    print(f"⚠️ Model {model} returned status {response.status_code}: {response.text}")
-            except Exception as e:
-                print(f"❌ Exception connecting to {model}: {e}")
+async def query_gemini_ai_async(system_prompt: str, user_content: str) -> str:
+    """Send clean REST request directly to Google Gemini API (100% Free & Stable)."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     
-    raise Exception("Failed to get response from all available AI models.")
+    payload = {
+        "system_instruction": {
+            "parts": [{"text": system_prompt}]
+        },
+        "contents": [
+            {
+                "parts": [{"text": user_content}]
+            }
+        ]
+    }
+    
+    async with httpx.AsyncClient(timeout=60.0) as httpx_client:
+        response = await httpx_client.post(url, json=payload)
+        if response.status_code == 200:
+            data = response.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        else:
+            raise Exception(f"Gemini API Error {response.status_code}: {response.text}")
 
 # ==========================================
 # 2. UTILITY & CLEANING FUNCTIONS
@@ -135,12 +125,10 @@ async def auto_healing_watchdog(app):
                 
                 current_code, sha = await get_github_file_async()
                 if current_code and sha:
-                    messages = [
-                        {"role": "system", "content": "You are a code repairing agent. Output ONLY the raw updated code. Absolutely no text explanations, markdown tags, or backticks."},
-                        {"role": "user", "content": f"The website returned error: {status_code}. Fix any broken HTML/JS code in:\n{current_code}"}
-                    ]
+                    sys_prompt = "You are a code repairing agent. Output ONLY the raw updated code. Absolutely no text explanations, markdown tags, or backticks."
+                    user_prompt = f"The website returned error: {status_code}. Fix any broken HTML/JS code in:\n{current_code}"
                     
-                    raw_patched = await query_hf_ai_async(messages)
+                    raw_patched = await query_gemini_ai_async(sys_prompt, user_prompt)
                     patched_code = extract_clean_code(raw_patched)
                     
                     success = await update_github_file_async(
@@ -172,14 +160,12 @@ async def handle_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await context.bot.send_message(chat_id=chat_id, text="❌ Could not fetch file from GitHub. Check environment credentials.")
         return
         
-    await context.bot.send_message(chat_id=chat_id, text="🧠 **Step 2:** Generating updates with AI Agent...")
+    await context.bot.send_message(chat_id=chat_id, text="🧠 **Step 2:** Generating updates with Gemini AI...")
     try:
-        messages = [
-            {"role": "system", "content": "You are an AI developer. Update the code according to request. Output raw updated code only. No explanations, no markdown blocks."},
-            {"role": "user", "content": f"Existing Code:\n{current_code}\n\nUser Request:\n{user_prompt}"}
-        ]
+        sys_prompt = "You are an AI developer. Update the code according to request. Output raw updated code only. No explanations, no markdown blocks."
+        user_content = f"Existing Code:\n{current_code}\n\nUser Request:\n{user_prompt}"
         
-        raw_code = await query_hf_ai_async(messages)
+        raw_code = await query_gemini_ai_async(sys_prompt, user_content)
         new_code = extract_clean_code(raw_code)
         
         await context.bot.send_message(chat_id=chat_id, text="⚙️ **Step 3:** Committing and pushing changes directly to GitHub...")
@@ -204,5 +190,5 @@ if __name__ == "__main__":
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_command))
     
-    print("Autonomous Patching Agent is running.")
+    print("Autonomous Patching Agent is running with Gemini API.")
     app.run_polling()
