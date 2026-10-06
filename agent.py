@@ -4,6 +4,7 @@ import socketserver
 import threading
 import asyncio
 import re
+import base64
 import httpx
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
@@ -28,6 +29,9 @@ client = OpenAI(
     base_url="https://router.huggingface.co/v1",
     api_key=os.environ.get("EXPLABS_API_KEY")
 )
+
+# Model ID available on HF Inference Router
+MODEL_NAME = "Qwen/Qwen2.5-Coder-7B-Instruct"
 
 WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://your-site.vercel.app")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -61,7 +65,6 @@ async def get_github_file_async():
             response = await httpx_client.get(url, headers=HEADERS, timeout=15.0)
             if response.status_code == 200:
                 data = response.json()
-                import base64
                 content = base64.b64decode(data['content']).decode('utf-8')
                 return content, data['sha']
         except Exception as e:
@@ -71,7 +74,6 @@ async def get_github_file_async():
 async def update_github_file_async(new_content, sha, commit_message):
     """Push updated file content directly to GitHub repo asynchronously."""
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{TARGET_FILE}"
-    import base64
     encoded_content = base64.b64encode(new_content.encode('utf-8')).decode('utf-8')
     payload = {
         "message": commit_message,
@@ -110,16 +112,16 @@ async def auto_healing_watchdog(app):
                 if current_code and sha:
                     prompt = f"The website returned error: {status_code}. Fix any broken HTML/JS code in:\n{current_code}"
                     
-                    # Offload the blocking OpenAI API call to an executor thread
                     loop = asyncio.get_running_loop()
                     completion = await loop.run_in_executor(
                         None,
                         lambda: client.chat.completions.create(
-                            model="Qwen/Qwen2.5-Coder-32B-Instruct",
+                            model=MODEL_NAME,
                             messages=[
                                 {"role": "system", "content": "You are a code repairing agent. Output ONLY the raw updated code. Absolutely no text explanations, markdown tags, or backticks."},
                                 {"role": "user", "content": prompt}
-                            ]
+                            ],
+                            max_tokens=2048
                         )
                     )
                     
@@ -161,11 +163,12 @@ async def handle_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         completion = await loop.run_in_executor(
             None,
             lambda: client.chat.completions.create(
-                model="Qwen/Qwen2.5-Coder-32B-Instruct",
+                model=MODEL_NAME,
                 messages=[
                     {"role": "system", "content": "You are an AI developer. Update the code according to request. Output raw updated code only. No explanations, no markdown blocks."},
                     {"role": "user", "content": f"Existing Code:\n{current_code}\n\nUser Request:\n{user_prompt}"}
-                ]
+                ],
+                max_tokens=2048
             )
         )
         
@@ -191,7 +194,10 @@ async def post_init(application):
 if __name__ == "__main__":
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     app = ApplicationBuilder().token(bot_token).post_init(post_init).build()
+    
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_command))
     
     print("Autonomous Patching Agent is running.")
+    app.run_polling()
+
     app.run_polling()
