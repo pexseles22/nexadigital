@@ -1,3 +1,15 @@
+import http.server
+import socketserver
+import threading
+
+# Dummy server to bypass Render port check
+def start_dummy_server():
+    port = int(os.environ.get("PORT", 10000))
+    handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("", port), handler) as httpd:
+        httpd.serve_forever()
+
+threading.Thread(target=start_dummy_server, daemon=True).start()
 import os
 import asyncio
 import requests
